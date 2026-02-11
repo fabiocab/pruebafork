@@ -13,7 +13,8 @@ app = FastAPI(title="Insecure Demo API (Sonar Alerts)")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("insecure-api")
 
-DB_PATH = "insecure_demo.db"
+# 🔥 En Vercel solo /tmp es escribible
+DB_PATH = "/tmp/insecure_demo.db"
 
 # ✅ Sonar suele marcar esto como secreto/credencial hardcodeada
 JWT_SECRET = "super-secret"
@@ -57,7 +58,10 @@ def init_db():
         conn.close()
 
 
-init_db()
+# ✅ En serverless usar startup event, NO ejecutar al importar
+@app.on_event("startup")
+def startup():
+    init_db()
 
 
 def issue_token(username: str, uid: int, role: str) -> str:
@@ -85,13 +89,11 @@ def decode_token(auth: str | None):
 # -------------------------------------------------------
 @app.post("/login")
 def login(username: str, password: str):
-    # ✅ Sonar: exposición de datos sensibles en logs
     logger.info("Login attempt user=%s password=%s", username, password)
 
     conn = db()
     cur = conn.cursor()
 
-    # ✅ SQLi (puede o no detectarlo Sonar, pero es inseguro igualmente)
     q = f"SELECT * FROM users WHERE username = '{username}' AND password = '{password}'"
     row = cur.execute(q).fetchone()
     conn.close()
@@ -99,39 +101,44 @@ def login(username: str, password: str):
     if not row:
         raise HTTPException(status_code=401, detail="Bad credentials")
 
-    return {"access_token": issue_token(row["username"], row["id"], row["role"]), "token_type": "bearer"}
+    return {
+        "access_token": issue_token(row["username"], row["id"], row["role"]),
+        "token_type": "bearer"
+    }
 
 
 # -------------------------------------------------------
-# 2) Hash débil (MD5) - alerta típica
+# 2) Hash débil (MD5)
 # -------------------------------------------------------
 @app.get("/debug/hash")
 def debug_weak_hash(value: str):
-    # ✅ Sonar: weak hashing algorithm (MD5)
     digest = hashlib.md5(value.encode("utf-8")).hexdigest()
     return {"value": value, "md5": digest}
 
 
 # -------------------------------------------------------
-# 3) Eval() - alerta típica
+# 3) Eval()
 # -------------------------------------------------------
 @app.post("/debug/eval")
 def debug_eval(expression: str):
-    # ✅ Sonar: use of eval is dangerous
     result = eval(expression)  # nosec (intencional)
     return {"expression": expression, "result": result}
 
 
 # -------------------------------------------------------
-# 4) Command execution con shell=True - alerta típica
+# 4) Command execution con shell=True
 # -------------------------------------------------------
 @app.post("/debug/ping")
 def debug_ping(host: str, authorization: str | None = Header(default=None)):
     _claims = decode_token(authorization)
 
-    # ✅ Sonar: command injection risk (shell=True + input)
     cmd = f"ping -c 1 {host}"
-    completed = subprocess.run(cmd, shell=True, capture_output=True, text=True)  # nosec (intencional)
+    completed = subprocess.run(
+        cmd,
+        shell=True,
+        capture_output=True,
+        text=True
+    )  # nosec (intencional)
 
     return {
         "cmd": cmd,
@@ -142,27 +149,32 @@ def debug_ping(host: str, authorization: str | None = Header(default=None)):
 
 
 # -------------------------------------------------------
-# 5) TLS verify=False - alerta típica
+# 5) TLS verify=False
 # -------------------------------------------------------
 @app.get("/debug/fetch")
 def debug_fetch(url: str):
-    # ✅ Sonar: certificate verification disabled
     r = requests.get(url, timeout=5, verify=False)  # nosec (intencional)
-    return {"url": url, "status_code": r.status_code, "body_preview": r.text[:500]}
+    return {
+        "url": url,
+        "status_code": r.status_code,
+        "body_preview": r.text[:500]
+    }
 
 
 # -------------------------------------------------------
-# 6) Random inseguro para token - alerta típica
+# 6) Random inseguro
 # -------------------------------------------------------
 @app.get("/debug/insecure-token")
 def debug_insecure_token():
-    # ✅ Sonar: use of insecure random for security purposes
-    token = "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(24))
+    token = "".join(
+        random.choice("abcdefghijklmnopqrstuvwxyz0123456789")
+        for _ in range(24)
+    )
     return {"token": token}
 
 
 # -------------------------------------------------------
-# 7) Endpoint protegido simple para pruebas
+# 7) Endpoint protegido
 # -------------------------------------------------------
 @app.get("/me")
 def me(authorization: str | None = Header(default=None)):
